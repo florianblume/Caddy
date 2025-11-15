@@ -11,7 +11,7 @@ jobs:
   check:
     runs-on: ubuntu-latest
     outputs:
-      needs_build: ${{ steps.compare.outputs.needs_build }}
+      needs_build: ${{ steps.final_decision.outputs.needs_build }}
 
     steps:
       - name: Checkout repo
@@ -36,9 +36,10 @@ jobs:
         run: |
           DIGEST=$(docker buildx imagetools inspect $IMAGE --format "{{json .Manifest}}" | jq -r .digest)
           echo "digest=$DIGEST" >> $GITHUB_OUTPUT
+          echo "$DIGEST"
 
       #################################################
-      # Get current plugin SHAs
+      # Get plugin SHAs
       #################################################
       - name: Get plugin commits
         id: plugin_shas
@@ -66,6 +67,7 @@ jobs:
 
           OUT="$OUT}}"
           echo "$OUT" > current_plugins.json
+          echo "$OUT"
           echo "result=$OUT" >> $GITHUB_OUTPUT
 
       #################################################
@@ -79,7 +81,7 @@ jobs:
           key: state-cache
 
       #################################################
-      # Compare previous state.json with current state
+      # Compare previous state with current
       #################################################
       - name: Compare with previous state
         id: compare
@@ -87,22 +89,18 @@ jobs:
           mkdir -p .cache-info
           PREV_FILE=".cache-info/state.json"
 
-          # Build current state
           jq -n \
             --arg base "${{ steps.base.outputs.digest }}" \
             --slurpfile plugins current_plugins.json \
             '{base_image: $base, plugin_commits: $plugins[0].plugin_commits}' \
             > current_state.json
 
-          # If previous state does not exist → build
           if [ ! -f "$PREV_FILE" ]; then
-            echo "No previous state found. Needs build."
             echo "needs_build=true" >> $GITHUB_OUTPUT
             cp current_state.json "$PREV_FILE"
             exit 0
           fi
 
-          # Compare JSON objects
           if diff -q "$PREV_FILE" current_state.json >/dev/null ; then
             echo "needs_build=false" >> $GITHUB_OUTPUT
           else
@@ -110,7 +108,19 @@ jobs:
           fi
 
       #################################################
-      # Save new state.json into cache
+      # Force rebuild on push to main
+      #################################################
+      - name: Override for push
+        id: final_decision
+        run: |
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            echo "needs_build=true" >> $GITHUB_OUTPUT
+          else
+            echo "needs_build=${{ steps.compare.outputs.needs_build }}" >> $GITHUB_OUTPUT
+          fi
+
+      #################################################
+      # Save new state for next run
       #################################################
       - name: Save new state
         run: |
@@ -123,7 +133,7 @@ jobs:
           key: state-cache
 
   #################################################
-  # Build job only runs when needed
+  # BUILD ONLY IF CHECK SAYS "true"
   #################################################
   build:
     needs: check
