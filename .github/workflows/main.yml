@@ -1,0 +1,151 @@
+name: Conditional Docker Build
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      needs_build: ${{ steps.compare.outputs.needs_build }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      #################################################
+      # CONFIG — ADD MORE PLUGINS HERE
+      #################################################
+      - name: Define plugins
+        id: config
+        run: |
+          PLUGINS='[
+            {"name": "caddy-ratelimit", "repo": "https://github.com/mholt/caddy-ratelimit"}
+          ]'
+          echo "plugins=$PLUGINS" >> $GITHUB_OUTPUT
+
+      #################################################
+      # Get current base image digest
+      #################################################
+      - name: Get base image digest
+        id: base
+        run: |
+          DIGEST=$(docker manifest inspect caddy:latest --verbose | jq -r '.Descriptor.digest')
+          echo "digest=$DIGEST" >> $GITHUB_OUTPUT
+
+      #################################################
+      # Get current plugin SHAs
+      #################################################
+      - name: Get plugin commits
+        id: plugin_shas
+        run: |
+          PLUGINS='${{ steps.config.outputs.plugins }}'
+          echo "$PLUGINS" > plugins.json
+          
+          OUT="{\"plugin_commits\":{"
+          FIRST=true
+
+          for row in $(jq -c '.[]' plugins.json); do
+            NAME=$(echo "$row" | jq -r '.name')
+            REPO=$(echo "$row" | jq -r '.repo')
+
+            SHA=$(git ls-remote "$REPO" HEAD | awk '{print $1}')
+
+            if [ "$FIRST" = true ]; then
+              FIRST=false
+            else
+              OUT="$OUT,"
+            fi
+
+            OUT="$OUT\"$NAME\":\"$SHA\""
+          done
+
+          OUT="$OUT}}"
+          echo "$OUT" > current_plugins.json
+          echo "result=$OUT" >> $GITHUB_OUTPUT
+
+      #################################################
+      # Load previous state.json from cache
+      #################################################
+      - name: Restore previous state
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: .cache-info
+          key: state-cache
+
+      #################################################
+      # Compare previous state.json with current state
+      #################################################
+      - name: Compare with previous state
+        id: compare
+        run: |
+          mkdir -p .cache-info
+          PREV_FILE=".cache-info/state.json"
+
+          # Build current state
+          jq -n \
+            --arg base "${{ steps.base.outputs.digest }}" \
+            --slurpfile plugins current_plugins.json \
+            '{base_image: $base, plugin_commits: $plugins[0].plugin_commits}' \
+            > current_state.json
+
+          # If previous state does not exist → build
+          if [ ! -f "$PREV_FILE" ]; then
+            echo "No previous state found. Needs build."
+            echo "needs_build=true" >> $GITHUB_OUTPUT
+            cp current_state.json "$PREV_FILE"
+            exit 0
+          fi
+
+          # Compare JSON objects
+          if diff -q "$PREV_FILE" current_state.json >/dev/null ; then
+            echo "needs_build=false" >> $GITHUB_OUTPUT
+          else
+            echo "needs_build=true" >> $GITHUB_OUTPUT
+          fi
+
+      #################################################
+      # Save new state.json into cache
+      #################################################
+      - name: Save new state
+        run: |
+          cp current_state.json .cache-info/state.json
+
+      - name: Update cache
+        uses: actions/cache@v4
+        with:
+          path: .cache-info
+          key: state-cache
+
+  #################################################
+  # Build job only runs when needed
+  #################################################
+  build:
+    needs: check
+    if: ${{ needs.check.outputs.needs_build == 'true' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to dockerhub/florianblume
+        uses: docker/login-action@v3
+        with:
+          registry: florianblume/caddy
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: florianblume/caddy:latest
