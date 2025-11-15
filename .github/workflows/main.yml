@@ -34,8 +34,7 @@ jobs:
       - name: Get base image digest
         id: base
         run: |
-          docker manifest inspect caddy:latest --verbose | jq
-          DIGEST=$(docker manifest inspect caddy:latest --verbose | jq -r '.Descriptor.digest')
+          DIGEST=$(docker buildx imagetools inspect $IMAGE --format "{{json .Manifest}}" | jq -r .digest)
           echo "digest=$DIGEST" >> $GITHUB_OUTPUT
 
       #################################################
