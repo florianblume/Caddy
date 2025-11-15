@@ -26,7 +26,7 @@ jobs:
           PLUGINS='[
             {"name": "caddy-ratelimit", "repo": "https://github.com/mholt/caddy-ratelimit"}
           ]'
-          echo "plugins=$PLUGINS" >> $GITHUB_OUTPUT
+          echo "plugins=$(echo "$PLUGINS" | jq -c)" >> $GITHUB_OUTPUT
 
       #################################################
       # Get current base image digest
