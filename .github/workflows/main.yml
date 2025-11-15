@@ -34,7 +34,7 @@ jobs:
       - name: Get base image digest
         id: base
         run: |
-          DIGEST=$(docker buildx imagetools inspect $IMAGE --format "{{json .Manifest}}" | jq -r .digest)
+          DIGEST=$(docker buildx imagetools inspect $CADDY_VERSION --format "{{json .Manifest}}" | jq -r .digest)
           echo "digest=$DIGEST" >> $GITHUB_OUTPUT
           echo "$DIGEST"
 
